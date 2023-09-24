@@ -2,7 +2,6 @@ package handlers
 
 import (
 	"fmt"
-	"os"
 	"serve-ressources/requests"
 	"serve-ressources/responses"
 	s "serve-ressources/server"
@@ -51,11 +50,18 @@ func (h *RessourceHandler) GetRessource(c echo.Context) error {
 	id := c.Param("id")
 
 	ressourceRequest := new(requests.RessourceBimg)
+
+	if err := c.Bind(ressourceRequest); err != nil {
+		return responses.ErrorResponse(c, http.StatusBadRequest, err)
+	}
+
+	if err := ressourceRequest.Validate(); err != nil {
+		return responses.ErrorResponse(c, http.StatusBadRequest, err)
+	}
+
 	key := fmt.Sprintf("%s-%d-%d-%d-%t-%t", id, ressourceRequest.W, ressourceRequest.H, ressourceRequest.Q, ressourceRequest.C, ressourceRequest.A)
 
 	val, err := h.server.REDIS.Client.Get(h.server.REDIS.Ctx, key).Result()
-
-	fmt.Println(err)
 
 	if err != redis.Nil && err != nil {
 		return responses.ErrorResponse(c, http.StatusInternalServerError, err)
@@ -74,35 +80,16 @@ func (h *RessourceHandler) GetRessource(c echo.Context) error {
 		return nil
 	}
 
-	if err := c.Bind(ressourceRequest); err != nil {
-		return responses.ErrorResponse(c, http.StatusBadRequest, err)
-	}
-
-	if err := ressourceRequest.Validate(); err != nil {
-		return responses.ErrorResponse(c, http.StatusBadRequest, err)
-	}
-
-	file, err := os.Open(fmt.Sprintf("%s/%s", h.server.Config.CDN.UploadPath, id))
+	// this is vulnerable to path traversal and pixel flood attacks (with upload system the user can dos the server)
+	buffer, err := bimg.Read(fmt.Sprintf("%s/%s", h.server.Config.CDN.UploadPath, id))
 	if err != nil {
 		return responses.ErrorResponse(c, http.StatusInternalServerError, err)
 	}
-	defer file.Close()
-
-	fileInfo, err := file.Stat()
-	if err != nil {
-		return responses.ErrorResponse(c, http.StatusInternalServerError, err)
-	}
-
-	fileSize := fileInfo.Size()
-
-	buffer := make([]byte, fileSize)
-	file.Read(buffer)
 
 	contentType := http.DetectContentType(buffer)
 
 	var newImage []byte
 	if contentType == "image/gif" && ressourceRequest.A {
-		// TODO: Gifs are not working
 		newImage = buffer
 	} else {
 		newImage, err = bimg.NewImage(buffer).Process(bimg.Options{
@@ -110,6 +97,7 @@ func (h *RessourceHandler) GetRessource(c echo.Context) error {
 			Height: 	ressourceRequest.H,
 			Quality:	ressourceRequest.Q,
 			Crop:   	ressourceRequest.C,
+			Type: 		bimg.WEBP,
 		})
 		if err != nil {
 			return responses.ErrorResponse(c, http.StatusInternalServerError, err)
